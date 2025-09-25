@@ -29,16 +29,15 @@ async function createFeedUploader(topicBytes: Uint8Array) {
     let id = 0
 
     const hookFn = async (redundancyLevel: number): Promise<UploadResult> => {
-        id++
         const identifier = makeFeedIdentifier(topicBytes, id)
         const payload = new TextEncoder().encode(`This is write number ${id}`)
         const soc = constructSOCChunk(privateKey, identifier, payload)
-        console.log("topic is at upload", Binary.uint8ArrayToHex(topicBytes))
         
         const startTime = performance.now()
         await uploadSoc(ownerAddress, Binary.uint8ArrayToHex(identifier), soc.signature, soc.socPayload, redundancyLevel)
         const endTime = performance.now()
         
+        id++
         return {
             payload,
             identifier: Binary.uint8ArrayToHex(identifier),
@@ -138,6 +137,31 @@ async function uploadSoc(
     }
 }
 
+// only for bzz endpoint
+async function uploadFeedManifest(ownerAddress: string, topicBytes: Uint8Array): Promise<string> {
+    const beeUrl = UPLOAD_URL
+    const postageBatch = POSTAGE_BATCH
+    const topic = Binary.uint8ArrayToHex(topicBytes)
+    
+    const response = await fetch(`${beeUrl}/feeds/${ownerAddress}/${topic}`, {
+        method: 'POST',
+        headers: {
+            'swarm-postage-batch-id': postageBatch,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            type: 'sequence'
+        })
+    })
+    
+    if (!response.ok) {
+        throw new Error(`Feed manifest creation failed: ${response.status} ${response.statusText}`)
+    }
+    
+    const result = await response.json()
+    return result.reference
+}
+
 /// DOWNLOAD
 
 interface DownloadResult {
@@ -153,16 +177,18 @@ async function downloadFeed(
     const beeUrl = DOWNLOAD_URL
     const topic = Binary.uint8ArrayToHex(topicBytes)
     const startTime = performance.now()
-    console.log("topic is at download", topic)
-    const response = await fetch(`${beeUrl}/feeds/${ownerAddress}/${topic}`, {
-        // headers: {
-        //     'swarm-redundancy-level': redundancyLevel.toString(),
-        // },
+    
+    // Try to get the latest feed update
+    const url = `${beeUrl}/feeds/${ownerAddress}/${topic}`    
+    const response = await fetch(url, {
+        headers: {
+            'swarm-redundancy-level': redundancyLevel.toString(),
+        },
     })
     const endTime = performance.now()
     
     if (!response.ok) {
-        throw new Error(`Feed download failed: ${response.status} ${response.statusText}`)
+        throw new Error(`Feed download failed: ${response.status} ${response.statusText} ${response.body}`)
     }
     
     const data = new Uint8Array(await response.arrayBuffer())
@@ -229,6 +255,23 @@ function makeFeedIdentifier(topicBytes: Uint8Array, index: number): Uint8Array {
     const indexBytes = Binary.numberToUint64(BigInt(index), 'BE')
 
     return Binary.keccak256(Binary.concatBytes(topicBytes, indexBytes))
+}
+
+
+function calculateStats(values: number[]) {
+    if (values.length === 0) {
+        return { average: 0, min: 0, max: 0, stdDev: 0 }
+    }
+    
+    const average = values.reduce((sum, val) => sum + val, 0) / values.length
+    const min = Math.min(...values)
+    const max = Math.max(...values)
+    
+    // Calculate standard deviation
+    const variance = values.reduce((sum, val) => sum + Math.pow(val - average, 2), 0) / values.length
+    const stdDev = Math.sqrt(variance)
+    
+    return { average, min, max, stdDev }
 }
 
 /// MEASUREMENTS
@@ -299,10 +342,10 @@ async function measureSoc() {
 }
 
 async function measureFeed() {
-    const feeds = 1
+    const feeds = 5
     const updates = 2
     
-    for (let redundancyLevel = 0; redundancyLevel <= 1; redundancyLevel++) {
+    for (let redundancyLevel = 0; redundancyLevel <= 4; redundancyLevel++) {
         console.log(`\n=== Testing Feed Redundancy Level ${redundancyLevel} ===`)
         
         const uploadTimes: number[] = []
@@ -322,8 +365,8 @@ async function measureFeed() {
                 // Perform multiple updates
                 for (let update = 0; update < updates; update++) {
                     const uploadResult = await feedUploader.hookFn(redundancyLevel)
-                    totalUploadTime += uploadResult.uploadTime
-                    totalConstructionTime += uploadResult.constructionTime
+                    totalUploadTime = uploadResult.uploadTime
+                    totalConstructionTime = uploadResult.constructionTime
                 }
 
                 // sleep
@@ -337,7 +380,6 @@ async function measureFeed() {
                 constructionTimes.push(totalConstructionTime)
                 downloadTimes.push(downloadResult.downloadTime)
                 successfulTests++
-                
             } catch (error) {
                 console.log(`  ❌ Failed attempt ${feedIndex + 1}: ${error}`)
             }
@@ -379,20 +421,4 @@ main()
 async function main() {
     // await measureSoc()
     await measureFeed()
-}
-
-function calculateStats(values: number[]) {
-    if (values.length === 0) {
-        return { average: 0, min: 0, max: 0, stdDev: 0 }
-    }
-    
-    const average = values.reduce((sum, val) => sum + val, 0) / values.length
-    const min = Math.min(...values)
-    const max = Math.max(...values)
-    
-    // Calculate standard deviation
-    const variance = values.reduce((sum, val) => sum + Math.pow(val - average, 2), 0) / values.length
-    const stdDev = Math.sqrt(variance)
-    
-    return { average, min, max, stdDev }
 }
