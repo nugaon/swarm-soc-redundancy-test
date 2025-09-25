@@ -2,8 +2,9 @@
   "name": "swarm-soc-redundancy-test",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "dist/index.js",
   "scripts": {
+    "start": "ts-node src/index.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -14,5 +15,8 @@
     "@ethersphere/bee-js": "^9.8.1",
     "@fairdatasociety/bmt-js": "^2.1.0",
     "cafe-utility": "^30.0.1"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.2"
   }
 }
