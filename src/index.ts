@@ -172,15 +172,82 @@ function create32ByteGenerator() {
 main()
 
 async function main() {
-    const redundancyLevel = 0
-    const uploader = await createSocUploader()
-    const uploadResult = await uploader.hookFn(redundancyLevel)
-    console.log(`Owner: ${uploader.owner}`)
-    console.log(`Identifier: ${uploadResult.identifier}`)
-    console.log(`Redundancy level: ${redundancyLevel}`)
-    console.log(`Construction time: ${uploadResult.constructionTime}`)
-    console.log(`Upload time: ${uploadResult.uploadTime}`)
-    const downloadResult = await downloadSoc(uploader.owner, uploadResult.identifier, redundancyLevel)
-    console.log(`Data matches: ${Binary.equals(uploadResult.payload, downloadResult.data)}`)
-    console.log(`Download time: ${downloadResult.downloadTime}`)
+    const attempts = 10
+    
+    for (let redundancyLevel = 0; redundancyLevel <= 4; redundancyLevel++) {
+        console.log(`\n=== Testing Redundancy Level ${redundancyLevel} ===`)
+        
+        const uploader = await createSocUploader()
+        const uploadTimes: number[] = []
+        const constructionTimes: number[] = []
+        const downloadTimes: number[] = []
+        let successfulUploads = 0
+        
+        for (let i = 0; i < attempts; i++) {
+            try {
+                //console.log(`Attempt ${i + 1}/${attempts}...`)
+                const uploadResult = await uploader.hookFn(redundancyLevel)
+                
+                // Verify download works
+                const downloadResult = await downloadSoc(uploader.owner, uploadResult.identifier, redundancyLevel)
+                const dataMatches = Binary.equals(uploadResult.payload, downloadResult.data)
+                
+                if (dataMatches) {
+                    uploadTimes.push(uploadResult.uploadTime)
+                    constructionTimes.push(uploadResult.constructionTime)
+                    downloadTimes.push(downloadResult.downloadTime)
+                    successfulUploads++
+                } else {
+                    console.log(`  ❌ Data mismatch on attempt ${i + 1}`)
+                }
+            } catch (error) {
+                console.log(`  ❌ Failed attempt ${i + 1}: ${error}`)
+            }
+        }
+        
+        if (successfulUploads > 0) {
+            // Calculate statistics
+            const uploadStats = calculateStats(uploadTimes)
+            const constructionStats = calculateStats(constructionTimes)
+            const downloadStats = calculateStats(downloadTimes)
+            
+            console.log(`\nResults for Redundancy Level ${redundancyLevel}:`)
+            console.log(`Successful uploads: ${successfulUploads}/${attempts}`)
+            console.log(`\nUpload Times (ms):"`)
+            console.log(`  Average: ${uploadStats.average.toFixed(2)}`)
+            console.log(`  Min: ${uploadStats.min.toFixed(2)}`)
+            console.log(`  Max: ${uploadStats.max.toFixed(2)}`)
+            console.log(`  Std Dev: ${uploadStats.stdDev.toFixed(2)}`)
+            
+            console.log(`\nConstruction Times (ms):"`)
+            console.log(`  Average: ${constructionStats.average.toFixed(2)}`)
+            console.log(`  Min: ${constructionStats.min.toFixed(2)}`)
+            console.log(`  Max: ${constructionStats.max.toFixed(2)}`)
+            console.log(`  Std Dev: ${constructionStats.stdDev.toFixed(2)}`)
+            
+            console.log(`\nDownload Times (ms):"`)
+            console.log(`  Average: ${downloadStats.average.toFixed(2)}`)
+            console.log(`  Min: ${downloadStats.min.toFixed(2)}`)
+            console.log(`  Max: ${downloadStats.max.toFixed(2)}`)
+            console.log(`  Std Dev: ${downloadStats.stdDev.toFixed(2)}`)
+        } else {
+            console.log(`\n❌ No successful uploads for redundancy level ${redundancyLevel}`)
+        }
+    }
+}
+
+function calculateStats(values: number[]) {
+    if (values.length === 0) {
+        return { average: 0, min: 0, max: 0, stdDev: 0 }
+    }
+    
+    const average = values.reduce((sum, val) => sum + val, 0) / values.length
+    const min = Math.min(...values)
+    const max = Math.max(...values)
+    
+    // Calculate standard deviation
+    const variance = values.reduce((sum, val) => sum + Math.pow(val - average, 2), 0) / values.length
+    const stdDev = Math.sqrt(variance)
+    
+    return { average, min, max, stdDev }
 }
