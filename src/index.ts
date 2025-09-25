@@ -1,4 +1,4 @@
-import { PrivateKey, BeeRequestOptions, SOCReader, Reference, RedundancyLevel } from '@ethersphere/bee-js'
+import { PrivateKey } from '@ethersphere/bee-js'
 import { Binary, Strings } from 'cafe-utility'
 import { makeChunk } from '@fairdatasociety/bmt-js'
 
@@ -23,19 +23,47 @@ interface SOCConstructionResult {
     constructionTime: number
 }
 
+async function createFeedUploader(topicBytes: Uint8Array) {
+    const privateKey = new PrivateKey(Strings.randomHex(64))
+    const ownerAddress = privateKey.publicKey().address().toHex()
+    let id = 0
+
+    const hookFn = async (redundancyLevel: number): Promise<UploadResult> => {
+        id++
+        const identifier = makeFeedIdentifier(topicBytes, id)
+        const payload = new TextEncoder().encode(`This is write number ${id}`)
+        const soc = constructSOCChunk(privateKey, identifier, payload)
+        console.log("topic is at upload", Binary.uint8ArrayToHex(topicBytes))
+        
+        const startTime = performance.now()
+        await uploadSoc(ownerAddress, Binary.uint8ArrayToHex(identifier), soc.signature, soc.socPayload, redundancyLevel)
+        const endTime = performance.now()
+        
+        return {
+            payload,
+            identifier: Binary.uint8ArrayToHex(identifier),
+            constructionTime: soc.constructionTime,
+            uploadTime: endTime - startTime
+        }
+    }
+
+    return {
+        hookFn,
+        owner: ownerAddress,
+    }
+}
+
 async function createSocUploader() {
     const privateKey = new PrivateKey(Strings.randomHex(64))
     const address = privateKey.publicKey().address()
     const identifierGenerator = create32ByteGenerator()
-    // const feedWriter = bee.makeFeedWriter(NULL_TOPIC, privateKey)
-    // const manifest = await bee.createFeedManifest(postageBatch, NULL_TOPIC, address, { redundancyLevel: 1 }) // could we set rlevel in manifest to not specify it on download?
 
     const hookFn = async (redundancyLevel: number): Promise<UploadResult> => {
         const id = identifierGenerator.next()
         const identifier = Binary.uint8ArrayToHex(id)
         const payload = new TextEncoder().encode(`This is write number ${identifier}`)
         const soc = constructSOCChunk(privateKey, id, payload)
-        
+
         const startTime = performance.now()
         await uploadSoc(address.toHex(), identifier, soc.signature, soc.socPayload, redundancyLevel)
         const endTime = performance.now()
@@ -117,6 +145,34 @@ interface DownloadResult {
     downloadTime: number
 }
 
+async function downloadFeed(
+    ownerAddress: string,
+    topicBytes: Uint8Array,
+    redundancyLevel = 0,
+): Promise<DownloadResult> {
+    const beeUrl = DOWNLOAD_URL
+    const topic = Binary.uint8ArrayToHex(topicBytes)
+    const startTime = performance.now()
+    console.log("topic is at download", topic)
+    const response = await fetch(`${beeUrl}/feed/${ownerAddress}/${topic}`, {
+        // headers: {
+        //     'swarm-redundancy-level': redundancyLevel.toString(),
+        // },
+    })
+    const endTime = performance.now()
+    
+    if (!response.ok) {
+        throw new Error(`Feed download failed: ${response.status} ${response.statusText}`)
+    }
+    
+    const data = new Uint8Array(await response.arrayBuffer())
+    
+    return {
+        data,
+        downloadTime: endTime - startTime
+    }
+}
+
 async function downloadSoc(
     ownerAddress: string,
     identifier: string,
@@ -126,7 +182,7 @@ async function downloadSoc(
     const startTime = performance.now()
     const response = await fetch(`${beeUrl}/soc/${ownerAddress}/${identifier}`, {
         headers: {
-            'swarm-redundancy-level': redundancyLevel.toString(),
+            // 'swarm-redundancy-level': redundancyLevel.toString(),
         },
     })
     const endTime = performance.now()
@@ -169,9 +225,15 @@ function create32ByteGenerator() {
     }
 }
 
-main()
+function makeFeedIdentifier(topicBytes: Uint8Array, index: number): Uint8Array {
+    const indexBytes = Binary.numberToUint64(BigInt(index), 'BE')
 
-async function main() {
+    return Binary.keccak256(Binary.concatBytes(topicBytes, indexBytes))
+}
+
+/// MEASUREMENTS
+
+async function measureSoc() {
     const attempts = 10
     
     for (let redundancyLevel = 0; redundancyLevel <= 4; redundancyLevel++) {
@@ -234,6 +296,89 @@ async function main() {
             console.log(`\n❌ No successful uploads for redundancy level ${redundancyLevel}`)
         }
     }
+}
+
+async function measureFeed() {
+    const feeds = 1
+    const updates = 2
+    
+    for (let redundancyLevel = 0; redundancyLevel <= 1; redundancyLevel++) {
+        console.log(`\n=== Testing Feed Redundancy Level ${redundancyLevel} ===`)
+        
+        const uploadTimes: number[] = []
+        const constructionTimes: number[] = []
+        const downloadTimes: number[] = []
+        const identifierGenerator = create32ByteGenerator()
+        let successfulTests = 0
+        
+        for (let feedIndex = 0; feedIndex < feeds; feedIndex++) {
+            try {
+                const topicBytes = identifierGenerator.next()
+                const feedUploader = await createFeedUploader(topicBytes)
+                
+                let totalUploadTime = 0
+                let totalConstructionTime = 0
+                
+                // Perform multiple updates
+                for (let update = 0; update < updates; update++) {
+                    const uploadResult = await feedUploader.hookFn(redundancyLevel)
+                    totalUploadTime += uploadResult.uploadTime
+                    totalConstructionTime += uploadResult.constructionTime
+                }
+
+                // sleep
+                await new Promise(resolve => setTimeout(resolve, 3000))
+                
+                // Try to download the feed
+                const downloadResult = await downloadFeed(feedUploader.owner, topicBytes, redundancyLevel)
+                
+                // Record successful test
+                uploadTimes.push(totalUploadTime)
+                constructionTimes.push(totalConstructionTime)
+                downloadTimes.push(downloadResult.downloadTime)
+                successfulTests++
+                
+            } catch (error) {
+                console.log(`  ❌ Failed attempt ${feedIndex + 1}: ${error}`)
+            }
+        }
+        
+        if (successfulTests > 0) {
+            // Calculate statistics
+            const uploadStats = calculateStats(uploadTimes)
+            const constructionStats = calculateStats(constructionTimes)
+            const downloadStats = calculateStats(downloadTimes)
+            
+            console.log(`\nFeed Results for Redundancy Level ${redundancyLevel}:`)
+            console.log(`Successful tests: ${successfulTests}/${feeds} (${updates} updates each)`)
+            console.log(`\nTotal Upload Times (ms):`)
+            console.log(`  Average: ${uploadStats.average.toFixed(2)}`)
+            console.log(`  Min: ${uploadStats.min.toFixed(2)}`)
+            console.log(`  Max: ${uploadStats.max.toFixed(2)}`)
+            console.log(`  Std Dev: ${uploadStats.stdDev.toFixed(2)}`)
+            
+            console.log(`\nTotal Construction Times (ms):`)
+            console.log(`  Average: ${constructionStats.average.toFixed(2)}`)
+            console.log(`  Min: ${constructionStats.min.toFixed(2)}`)
+            console.log(`  Max: ${constructionStats.max.toFixed(2)}`)
+            console.log(`  Std Dev: ${constructionStats.stdDev.toFixed(2)}`)
+            
+            console.log(`\nFeed Download Times (ms):`)
+            console.log(`  Average: ${downloadStats.average.toFixed(2)}`)
+            console.log(`  Min: ${downloadStats.min.toFixed(2)}`)
+            console.log(`  Max: ${downloadStats.max.toFixed(2)}`)
+            console.log(`  Std Dev: ${downloadStats.stdDev.toFixed(2)}`)
+        } else {
+            console.log(`\n❌ No successful feed tests for redundancy level ${redundancyLevel}`)
+        }
+    }
+}
+
+main()
+
+async function main() {
+    // await measureSoc()
+    await measureFeed()
 }
 
 function calculateStats(values: number[]) {
