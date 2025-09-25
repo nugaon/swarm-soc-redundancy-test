@@ -2,9 +2,9 @@ import { PrivateKey, BeeRequestOptions, SOCReader, Reference, RedundancyLevel } 
 import { Binary, Strings } from 'cafe-utility'
 import { makeChunk } from '@fairdatasociety/bmt-js'
 
-const POSTAGE_BATCH = 'b961413232c96eedae48947a71c99e454e51c4b5bf93a77c59f958af1229a932'
-const UPLOAD_URL = 'http://localhost:1633'
-const DOWNLOAD_URL = 'http://localhost:11633'
+const POSTAGE_BATCH = '48ddab68b7595f766de6aa233b6ff92dd382fd078952d70487d311218ea555d6'
+const UPLOAD_URL = 'http://localhost:11633'
+const DOWNLOAD_URL = 'http://localhost:1633'
 
 /// UPLOAD
 
@@ -18,7 +18,8 @@ interface UploadResult {
 interface SOCConstructionResult {
     owner: string
     identifier: string
-    socData: Uint8Array
+    signature: Uint8Array
+    socPayload: Uint8Array
     constructionTime: number
 }
 
@@ -36,7 +37,7 @@ async function createSocUploader() {
         const soc = constructSOCChunk(privateKey, id, payload)
         
         const startTime = performance.now()
-        await uploadSoc(address.toHex(), identifier, soc.socData, redundancyLevel)
+        await uploadSoc(address.toHex(), identifier, soc.signature, soc.socPayload, redundancyLevel)
         const endTime = performance.now()
         
         return {
@@ -69,15 +70,15 @@ function constructSOCChunk(
     // Sign the payload
     const sig = signer.sign(Binary.concatBytes(identifier, cacAddr))
     const signature = sig.toUint8Array()
-    
-    const socData = Binary.concatBytes(identifier, signature, cacSpan, cacData)
+    const socPayload = Binary.concatBytes(cacSpan, cacData)
 
     const endTime = performance.now()
     
     return {
         owner: signer.publicKey().address().toHex(),
         identifier: Binary.uint8ArrayToHex(identifier),
-        socData,
+        signature: signature,
+        socPayload,
         constructionTime: endTime - startTime
     }
 }
@@ -85,12 +86,14 @@ function constructSOCChunk(
 async function uploadSoc(
     owner: string,
     identifier: string,
-    socData: Uint8Array,
+    signature: Uint8Array,
+    socPayload: Uint8Array<ArrayBufferLike>,
     redundancyLevel = 0,
 ): Promise<void> {
     const beeUrl = UPLOAD_URL // uploader
     const postageBatch = POSTAGE_BATCH
-    const url = `${beeUrl}/soc/${owner}/${identifier}`
+    const signatureHex = Binary.uint8ArrayToHex(signature)
+    const url = `${beeUrl}/soc/${owner}/${identifier}?sig=${signatureHex}`
     
     const response = await fetch(url, {
         method: 'POST',
@@ -99,7 +102,7 @@ async function uploadSoc(
             'swarm-postage-batch-id': postageBatch,
             'swarm-redundancy-level': redundancyLevel.toString(),
         },
-        body: socData
+        body: new Uint8Array(socPayload),
     })
     
     if (!response.ok) {
@@ -172,12 +175,12 @@ async function main() {
     const redundancyLevel = 0
     const uploader = await createSocUploader()
     const uploadResult = await uploader.hookFn(redundancyLevel)
+    console.log(`Owner: ${uploader.owner}`)
+    console.log(`Identifier: ${uploadResult.identifier}`)
     console.log(`Redundancy level: ${redundancyLevel}`)
     console.log(`Construction time: ${uploadResult.constructionTime}`)
     console.log(`Upload time: ${uploadResult.uploadTime}`)
     const downloadResult = await downloadSoc(uploader.owner, uploadResult.identifier, redundancyLevel)
-    console.log(`Data: ${uploadResult.payload}`)
-    console.log(`Downloaded data: ${downloadResult.data}`)
     console.log(`Data matches: ${Binary.equals(uploadResult.payload, downloadResult.data)}`)
     console.log(`Download time: ${downloadResult.downloadTime}`)
 }
