@@ -419,6 +419,7 @@ async function measureFeed() {
 main()
 
 async function main() {
+    console.log('Current time is', new Date().toISOString())
     // await measureSoc()
     await measureFeed()
 }
