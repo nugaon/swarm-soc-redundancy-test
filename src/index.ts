@@ -154,7 +154,7 @@ async function downloadFeed(
     const topic = Binary.uint8ArrayToHex(topicBytes)
     const startTime = performance.now()
     console.log("topic is at download", topic)
-    const response = await fetch(`${beeUrl}/feed/${ownerAddress}/${topic}`, {
+    const response = await fetch(`${beeUrl}/feeds/${ownerAddress}/${topic}`, {
         // headers: {
         //     'swarm-redundancy-level': redundancyLevel.toString(),
         // },
